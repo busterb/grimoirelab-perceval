@@ -961,7 +961,7 @@ class GitRepository:
                            self.uri)
             raise EmptyRepositoryError(repository=self.uri)
 
-        cmd_log = ['git', 'log', '--reverse', '--topo-order']
+        cmd_log = ['git', 'log', '--reverse', '--topo-order', '--use-mailmap']
         cmd_log.extend(self.GIT_PRETTY_OUTPUT_OPTS)
 
         if from_date:
@@ -1016,7 +1016,7 @@ class GitRepository:
         if commits is None:
             commits = []
 
-        cmd_show = ['git', 'show']
+        cmd_show = ['git', 'show', '--use-mailmap']
         cmd_show.extend(self.GIT_PRETTY_OUTPUT_OPTS)
         cmd_show.extend(commits)
 
