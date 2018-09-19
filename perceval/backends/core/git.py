@@ -24,7 +24,9 @@ import io
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 
 import dulwich.client
@@ -39,6 +41,7 @@ from ...errors import RepositoryError, ParseError
 from ...utils import DEFAULT_DATETIME, DEFAULT_LAST_DATETIME
 
 CATEGORY_COMMIT = 'commit'
+CATEGORY_MODULE = 'module'
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +68,7 @@ class Git(Backend):
     """
     version = '0.12.0'
 
-    CATEGORIES = [CATEGORY_COMMIT]
+    CATEGORIES = [CATEGORY_COMMIT, CATEGORY_MODULE]
 
     def __init__(self, uri, gitpath, tag=None, archive=None):
         origin = uri
@@ -153,9 +156,18 @@ class Git(Backend):
                 commits = self.__fetch_from_repo(from_date, to_date, branches,
                                                  latest_items, no_update)
 
+            if category == "module":
+                repo = self.__create_git_repository()
+                cve_modules = []
+                for module in repo.grep("'CVE'", path='modules', date=to_date):
+                    cve_modules.append(module)
+
+                commits = self.__filter_module_commits(commits, cve_modules)
+
             for commit in commits:
                 yield commit
                 ncommits += 1
+
         except EmptyRepositoryError:
             pass
 
@@ -205,10 +217,17 @@ class Git(Backend):
     def metadata_category(item):
         """Extracts the category from a Git item.
 
-        This backend only generates one type of item which is
-        'commit'.
+        This backend generates two types of items which are
+        'commit' and 'module'.
         """
-        return CATEGORY_COMMIT
+
+        if "parents" in item:
+            category = CATEGORY_COMMIT
+        else:
+            category = CATEGORY_MODULE
+
+        return category
+
 
     @staticmethod
     def parse_git_log_from_file(filepath):
@@ -320,6 +339,38 @@ class Git(Backend):
             repo = GitRepository(self.uri, self.gitpath)
         return repo
 
+    def __filter_module_commits(self, commits, cve_modules):
+        module_commits = []
+        for commit in commits:
+            for f in commit["files"]:
+                filename = f["file"]
+                if filename.startswith("modules"):
+                    message = commit["message"]
+                    module = filename.replace("modules/", "").replace("exploits", "exploit").split(".")[0]
+                    module_info = {
+                            "Author": commit["Author"],
+                            "AuthorDate": commit["AuthorDate"],
+                            "Commit": commit["Commit"],
+                            "CommitDate": commit["CommitDate"],
+                            "Module": module,
+                            "ModuleType": module.split("/")[0],
+                            "HaveCVE": filename in cve_modules,
+                            "commit": commit["commit"] + "+" + module,
+                            "message": message
+                            }
+
+                    if "action" in f and "Merge" not in commit:
+                        if message.lower().startswith("land"):
+                            if f["added"] != "0" and f["removed"] == "0":
+                                module_info["Action"] = "merged"
+                        elif f["action"] == "A":
+                            module_info["Action"] = "authored"
+                        elif f["action"] == "M":
+                            module_info["Action"] = "updated"
+
+                    if "Action" in module_info:
+                        module_commits.append(module_info)
+        return module_commits
 
 class GitCommand(BackendCommand):
     """Class to run Git backend from the command line."""
@@ -983,6 +1034,52 @@ class GitRepository:
         logger.debug("Git rev-list fetched from %s repository (%s)",
                      self.uri, self.dirpath)
 
+    def tree_cmd(self, cmd, path='.', date=None, branches=None, encoding='utf-8'):
+        if self.is_empty():
+            logger.warning("Git %s repository is empty; unable to %s",
+                           self.uri, cmd[0])
+            raise EmptyRepositoryError(repository=self.uri)
+
+        if branches is None:
+            branches = ['master']
+
+        for branch in branches:
+            cmd_rev_list = ['git', 'rev-list', '-n1']
+            if date is not None:
+                dt = date.strftime("%Y-%m-%d %H:%M:%S %z")
+                cmd_rev_list.append('--before=' + dt)
+            cmd_rev_list.append(branch)
+
+            last_commit = None
+            for line in self._exec_nb(cmd_rev_list, cwd=self.dirpath, env=self.gitenv):
+                last_commit = line.strip()
+
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                cmd_worktree = ['git', 'worktree', 'add', tmp_dir, last_commit]
+                for line in self._exec_nb(cmd_worktree, cwd=self.dirpath, env=self.gitenv):
+                    pass
+
+                if os.path.isdir(os.path.join(tmp_dir, path)):
+                    for line in self._exec_nb(cmd, cwd=tmp_dir, env=self.gitenv):
+                        yield line.strip()
+            finally:
+                shutil.rmtree(tmp_dir)
+
+    def grep(self, pattern, path=None, date=None, branches=None, encoding='utf-8'):
+        cmd_grep = ['git', 'grep', '-l', pattern]
+        if path is not None:
+            cmd_grep.append(path)
+        for line in self.tree_cmd(cmd_grep, path, date, branches, encoding):
+            yield line
+
+    def find(self, pattern=None, path='.', date=None, branches=None, encoding='utf-8'):
+        cmd_find = ['find', path, '-type', 'f']
+        if pattern is not None:
+            cmd_find.extend(['-name', pattern])
+        for line in self.tree_cmd(cmd_find, path, date, branches, encoding):
+            yield line
+
     def log(self, from_date=None, to_date=None, branches=None, encoding='utf-8'):
         """Read the commit log from the repository.
 
@@ -1017,7 +1114,7 @@ class GitRepository:
                            self.uri)
             raise EmptyRepositoryError(repository=self.uri)
 
-        cmd_log = ['git', 'log', '--reverse', '--topo-order']
+        cmd_log = ['git', 'log', '--reverse', '--topo-order', '--use-mailmap']
         cmd_log.extend(self.GIT_PRETTY_OUTPUT_OPTS)
 
         if from_date:
@@ -1072,7 +1169,7 @@ class GitRepository:
         if commits is None:
             commits = []
 
-        cmd_show = ['git', 'show']
+        cmd_show = ['git', 'show', '--use-mailmap']
         cmd_show.extend(self.GIT_PRETTY_OUTPUT_OPTS)
         cmd_show.extend(commits)
 
