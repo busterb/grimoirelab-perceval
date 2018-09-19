@@ -40,6 +40,7 @@ from ...errors import RepositoryError, ParseError
 from ...utils import DEFAULT_DATETIME, DEFAULT_LAST_DATETIME
 
 CATEGORY_COMMIT = 'commit'
+CATEGORY_MODULE = 'module'
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class Metasploit(Backend):
     """
     version = '0.10.2'
 
-    CATEGORIES = [CATEGORY_COMMIT]
+    CATEGORIES = [CATEGORY_COMMIT, CATEGORY_MODULE]
 
     def __init__(self, uri, gitpath, tag=None, archive=None):
         origin = uri
@@ -200,10 +201,17 @@ class Metasploit(Backend):
     def metadata_category(item):
         """Extracts the category from a Git item.
 
-        This backend only generates one type of item which is
-        'commit'.
+        This backend generates two types of items which are
+        'commit' and 'module'.
         """
-        return CATEGORY_COMMIT
+
+        if "Commit" in item:
+            category = CATEGORY_COMMIT
+        else:
+            category = CATEGORY_MODULE
+
+        return category
+
 
     @staticmethod
     def parse_git_log_from_file(filepath):
