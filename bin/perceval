@@ -59,6 +59,7 @@ are:
     mbox             Fetch messages from MBox files
     mediawiki        Fetch pages and revisions from a MediaWiki site
     meetup           Fetch events from a Meetup group
+    metasploit       Fetch events from a Metasploit github repo
     nntp             Fetch articles from a NNTP news group
     phabricator      Fetch tasks from a Phabricator site
     pipermail        Fetch messages from a Pipermail archiver
