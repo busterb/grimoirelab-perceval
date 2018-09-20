@@ -339,6 +339,7 @@ class Metasploit(Backend):
                             "Commit": commit["Commit"],
                             "CommitDate": commit["CommitDate"],
                             "Module": module,
+                            "ModuleType": module.split("/")[0],
                             "commit": commit["commit"] + "+" + module,
                             "message": message
                             }
