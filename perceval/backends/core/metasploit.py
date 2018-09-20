@@ -149,6 +149,9 @@ class Metasploit(Backend):
                 commits = self.__fetch_from_repo(from_date, to_date, branches,
                                                  latest_items)
 
+            if category == "module":
+                commits = self.__filter_module_commits(commits)
+
             for commit in commits:
                 yield commit
                 ncommits += 1
@@ -205,7 +208,7 @@ class Metasploit(Backend):
         'commit' and 'module'.
         """
 
-        if "Commit" in item:
+        if "parents" in item:
             category = CATEGORY_COMMIT
         else:
             category = CATEGORY_MODULE
@@ -322,6 +325,36 @@ class Metasploit(Backend):
             repo = GitRepository(self.uri, self.gitpath)
         return repo
 
+    def __filter_module_commits(self, commits):
+        module_commits = []
+        for commit in commits:
+            for f in commit["files"]:
+                filename = f["file"]
+                if filename.startswith("modules"):
+                    message = commit["message"]
+                    module = filename.replace("modules/", "").replace("exploits", "exploit").split(".")[0]
+                    module_info = {
+                            "Author": commit["Author"],
+                            "AuthorDate": commit["AuthorDate"],
+                            "Commit": commit["Commit"],
+                            "CommitDate": commit["CommitDate"],
+                            "Module": module,
+                            "commit": commit["commit"] + "+" + module,
+                            "message": message
+                            }
+
+                    if "action" in f and "Merge" not in commit:
+                        if message.lower().startswith("land"):
+                            if f["added"] != "0" and f["removed"] == "0":
+                                module_info["Action"] = "merged"
+                        elif f["action"] == "A":
+                            module_info["Action"] = "authored"
+                        elif f["action"] == "M":
+                            module_info["Action"] = "updated"
+
+                    if "Action" in module_info:
+                        module_commits.append(module_info)
+        return module_commits
 
 class GitCommand(BackendCommand):
     """Class to run Git backend from the command line."""
