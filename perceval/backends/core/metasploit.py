@@ -25,7 +25,9 @@ import io
 import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 
 import dulwich.client
@@ -41,6 +43,7 @@ from ...utils import DEFAULT_DATETIME, DEFAULT_LAST_DATETIME
 
 CATEGORY_COMMIT = 'commit'
 CATEGORY_MODULE = 'module'
+CATEGORY_INVENTORY = 'inventory'
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +70,7 @@ class Metasploit(Backend):
     """
     version = '0.10.2'
 
-    CATEGORIES = [CATEGORY_COMMIT, CATEGORY_MODULE]
+    CATEGORIES = [CATEGORY_COMMIT, CATEGORY_MODULE, CATEGORY_INVENTORY]
 
     def __init__(self, uri, gitpath, tag=None, archive=None):
         origin = uri
@@ -143,18 +146,52 @@ class Metasploit(Backend):
         ncommits = 0
 
         try:
-            if os.path.isfile(self.gitpath):
-                commits = self.__fetch_from_log()
+            if category == "inventory":
+                if os.path.isfile(self.gitpath):
+                    raise ParseError("cannot perform inventory on a log file")
+                self.__fetch_from_repo(DEFAULT_DATETIME, to_date, branches, False)
+                repo = self.__create_git_repository()
+                num_cves = 0
+                for match in repo.grep("'CVE'", path='modules', date=to_date):
+                    num_cves += 1
+
+                num_modules = 0
+                for module in repo.find(path='modules', date=to_date):
+                    num_modules += 1
+
+                num_exploits = 0
+                for module in repo.find(path = 'modules/exploits'):
+                    num_exploits += 1
+
+                num_post = 0
+                for module in repo.find(path = 'modules/post'):
+                    num_post += 1
+
+                num_auxiliary = 0
+                for module in repo.find(path = 'modules/auxiliary'):
+                    num_auxiliary += 1
+
+                logger.info("%d %d %d %d", num_cves, num_modules, num_exploits, num_post)
+
             else:
-                commits = self.__fetch_from_repo(from_date, to_date, branches,
-                                                 latest_items)
+                if os.path.isfile(self.gitpath):
+                    commits = self.__fetch_from_log()
+                else:
+                    commits = self.__fetch_from_repo(from_date, to_date, branches,
+                                                     latest_items)
 
-            if category == "module":
-                commits = self.__filter_module_commits(commits)
+                if category == "module":
+                    repo = self.__create_git_repository()
+                    cve_modules = []
+                    for module in repo.grep("'CVE'", path='modules', date=to_date):
+                        cve_modules.append(module)
 
-            for commit in commits:
-                yield commit
-                ncommits += 1
+                    commits = self.__filter_module_commits(commits, cve_modules)
+
+                for commit in commits:
+                    yield commit
+                    ncommits += 1
+
         except EmptyRepositoryError:
             pass
 
@@ -325,7 +362,7 @@ class Metasploit(Backend):
             repo = GitRepository(self.uri, self.gitpath)
         return repo
 
-    def __filter_module_commits(self, commits):
+    def __filter_module_commits(self, commits, cve_modules):
         module_commits = []
         for commit in commits:
             for f in commit["files"]:
@@ -340,6 +377,7 @@ class Metasploit(Backend):
                             "CommitDate": commit["CommitDate"],
                             "Module": module,
                             "ModuleType": module.split("/")[0],
+                            "HaveCVE": filename in cve_modules,
                             "commit": commit["commit"] + "+" + module,
                             "message": message
                             }
@@ -968,6 +1006,52 @@ class GitRepository:
                      self.uri, self.dirpath)
 
         return commits
+
+    def tree_cmd(self, cmd, path='.', date=None, branches=None, encoding='utf-8'):
+        if self.is_empty():
+            logger.warning("Git %s repository is empty; unable to %s",
+                           self.uri, cmd[0])
+            raise EmptyRepositoryError(repository=self.uri)
+
+        if branches is None:
+            branches = ['master']
+
+        for branch in branches:
+            cmd_rev_list = ['git', 'rev-list', '-n1']
+            if date is not None:
+                dt = date.strftime("%Y-%m-%d %H:%M:%S %z")
+                cmd_rev_list.append('--before=' + dt)
+            cmd_rev_list.append(branch)
+
+            last_commit = None
+            for line in self._exec_nb(cmd_rev_list, cwd=self.dirpath, env=self.gitenv):
+                last_commit = line.strip()
+
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                cmd_worktree = ['git', 'worktree', 'add', tmp_dir, last_commit]
+                for line in self._exec_nb(cmd_worktree, cwd=self.dirpath, env=self.gitenv):
+                    pass
+
+                if os.path.isdir(os.path.join(tmp_dir, path)):
+                    for line in self._exec_nb(cmd, cwd=tmp_dir, env=self.gitenv):
+                        yield line.strip()
+            finally:
+                shutil.rmtree(tmp_dir)
+
+    def grep(self, pattern, path=None, date=None, branches=None, encoding='utf-8'):
+        cmd_grep = ['git', 'grep', '-l', pattern]
+        if path is not None:
+            cmd_grep.append(path)
+        for line in self.tree_cmd(cmd_grep, path, date, branches, encoding):
+            yield line
+
+    def find(self, pattern=None, path='.', date=None, branches=None, encoding='utf-8'):
+        cmd_find = ['find', path, '-type', 'f']
+        if pattern is not None:
+            cmd_find.extend(['-name', pattern])
+        for line in self.tree_cmd(cmd_find, path, date, branches, encoding):
+            yield line
 
     def log(self, from_date=None, to_date=None, branches=None, encoding='utf-8'):
         """Read the commit log from the repository.
