@@ -352,6 +352,7 @@ class Git(Backend):
                             "AuthorDate": commit["AuthorDate"],
                             "Commit": commit["Commit"],
                             "CommitDate": commit["CommitDate"],
+                            "FileName": filename,
                             "Module": module,
                             "ModuleType": module.split("/")[0],
                             "HaveCVE": filename in cve_modules,
@@ -1046,19 +1047,9 @@ class GitRepository:
             branches = ['master']
 
         for branch in branches:
-            cmd_rev_list = ['git', 'rev-list', '-n1']
-            if date is not None:
-                dt = date.strftime("%Y-%m-%d %H:%M:%S %z")
-                cmd_rev_list.append('--before=' + dt)
-            cmd_rev_list.append(branch)
-
-            last_commit = None
-            for line in self._exec_nb(cmd_rev_list, cwd=self.dirpath, env=self.gitenv):
-                last_commit = line.strip()
-
             tmp_dir = tempfile.mkdtemp()
             try:
-                cmd_worktree = ['git', 'worktree', 'add', tmp_dir, last_commit]
+                cmd_worktree = ['git', 'worktree', 'add', tmp_dir]
                 for line in self._exec_nb(cmd_worktree, cwd=self.dirpath, env=self.gitenv):
                     pass
 
