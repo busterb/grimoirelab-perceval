@@ -362,7 +362,7 @@ class Git(Backend):
 
                     if "action" in f and "Merge" not in commit:
                         if message.lower().startswith("land"):
-                            if f["added"] != "0" and f["removed"] == "0":
+                            if "added" in f and f["added"] != "0" and "removed" in f and f["removed"] == "0":
                                 module_info["Action"] = "merged"
                         elif f["action"] == "A":
                             module_info["Action"] = "authored"
